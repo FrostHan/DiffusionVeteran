@@ -1,0 +1,105 @@
+description: Minimalist Diffusor
+
+environment:
+  registry: dc1bc560c6304be6bdf367e1367437d9.azurecr.io
+  image: samples/dv_torch_d4rl:new
+  setup:
+    - set -euo pipefail
+    - |
+      export MUJOCO_PY_MUJOCO_PATH="$$AMLT_DATA_DIR"
+      export MUJOCO_PATH="$$AMLT_DATA_DIR"
+      export MUJOCO_PLUGIN_PATH="$$AMLT_DATA_DIR/bin"
+      export LD_LIBRARY_PATH="$$AMLT_DATA_DIR/bin:$${LD_LIBRARY_PATH}"
+      export MUJOCO_GL=egl
+      export MUJOCO_RENDERER=egl
+      test -f "$$AMLT_DATA_DIR/include/mjmodel.h" || (echo "[ERR] mjmodel.h missing" && exit 1)
+      test -f "$$AMLT_DATA_DIR/bin/libmujoco210.so" || (echo "[ERR] libmujoco210.so missing" && exit 1)
+      source /opt/conda/etc/profile.d/conda.sh
+      conda create -n dv2 python=3.9 mesalib glew glfw pip=23.0 setuptools=63.2.0 wheel=0.38.4 protobuf=3.20 -c conda-forge -y
+      conda activate dv2
+
+target:
+  service: singularity
+  # name: msrresrchvc 
+  # name: quickdevvc  
+  name: msrresrchlab ## see "amlt ti sing" for more details
+  # name: msrresrchbasicvc
+  # name: msroctovc   
+  # name: palisades33
+
+code:
+  local_dir: $CONFIG_DIR  
+
+data:
+  local_dir: /home/dongqihan/mujoco210
+  remote_dir: remote/data
+
+search:
+  job_template:
+    # you may use {random_string:s} to avoid job name collisions
+    # {auto:3s} generates lr_0.00000_mom_0.5, .. etc
+    # {auto:2s} generates lr_0.00000_mo_0.5, .. etc
+    name: search_{auto:5s}
+    # sku: G1-A100
+    sku: G1-V100
+    identity: managed
+    sla_tier: Premium
+    # sla_tier: Basic
+
+    submit_args: &retry_args
+      env: 
+        _AZUREML_SINGULARITY_JOB_UAI: "/subscriptions/c4c534bc-9978-4974-9c87-551f7c5754ef/resourceGroups/msra-sh-aml-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/msra-sh-aml-uai"
+      max_attempts: 2
+      max_run_duration_seconds: 600000  # ~ 7 days, you can set longer if needed
+    
+    command:
+    - source /opt/conda/etc/profile.d/conda.sh
+    - conda activate dv2
+    - export MUJOCO_PY_MUJOCO_PATH="$$AMLT_DATA_DIR"
+    - export MUJOCO_PATH="$$AMLT_DATA_DIR"
+    - export MUJOCO_PLUGIN_PATH="$$AMLT_DATA_DIR/bin"
+    - export LD_LIBRARY_PATH="$$AMLT_DATA_DIR/bin:$$LD_LIBRARY_PATH"
+    - export MUJOCO_GL=egl
+    - export MUJOCO_RENDERER=egl
+    - pip install mujoco==3.3.7
+    - pip install -r requirements.txt
+    - pip install -e .
+    - python -m pip install -U "pip>=24.1" "setuptools>=68" "wheel>=0.41"
+    - pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+    - pip install colorednoise
+    - pip install gymnasium 
+    - python pipelines/veteran_d4rl_mujoco.py mode="train" seed={seed} task={task} planner_depth={pd} planner_emb_dim=64 planner_d_model=128
+    # - python pipelines/veteran_d4rl_mujoco.py mode="train_expected_value" task={task} task.iql_tau={tau}
+    # - bash scripts/batch_inference_DV_mujoco_delayed.sh {seed} {last} {delay} {pd} {ph} {nb} {tmp} {gamma} {lr} {tau} {wf}
+
+  type: grid
+  # sampling: grid
+  max_trials: 2048
+  parallel_trials: 512
+
+  params: 
+    - name: task
+      spec: discrete
+      values: ["halfcheetah-medium-v2", "hopper-medium-v2", "walker2d-medium-v2", "halfcheetah-medium-expert-v2", "hopper-medium-expert-v2", "walker2d-medium-expert-v2", "halfcheetah-medium-replay-v2", "hopper-medium-replay-v2", "walker2d-medium-replay-v2"]
+
+    # - name: tau
+    #   spec: discrete
+    #   values: [0.5, 0.7, 0.9]
+
+    # - name: wf
+    #   spec: discrete
+    #   values: [0, 0.2, 0.5, 1.0, 2.0, 5.0, 20.0]
+
+    - name: pd
+      spec: discrete
+      values: [2, 4, 8] # planner depth
+
+    - name: seed
+      spec: discrete
+      values: [0, 1]
+
+    # ### Inference parameters
+    # - name: tmp
+    #   spec: discrete
+    #   values: [0.1, 0.3, 0.6, 1.0]
+

@@ -10,8 +10,8 @@ device: cuda:0
 project: Default
 group: release
 name: Default
-enable_wandb: true
-save_dir: results
+enable_wandb: false
+save_dir: "./results/"
 
 # Guidance
 guidance_type: MCSS # cfg, cg, MCSS
@@ -35,6 +35,8 @@ planner_predict_noise: True
 planner_next_obs_loss_weight: 1
 planner_ema_rate: 0.9999
 unet_dim: 32
+action_arctanh: 0
+normalize_action: 0
 
 ## Policy Config
 policy_solver: ddpm
@@ -51,7 +53,7 @@ use_diffusion_invdyn: 1
 invdyn_gradient_steps: 200000
 policy_diffusion_gradient_steps: 1000000
 planner_diffusion_gradient_steps: 1000000
-batch_size: 128
+batch_size: 256
 log_interval: 1000
 save_interval: 100000
 
@@ -66,6 +68,7 @@ invdyn_ckpt: 200000
 planner_use_ema: True
 policy_temperature: 0.5
 policy_use_ema: True
+print_interval: 10
 
 # hydra
 hydra:

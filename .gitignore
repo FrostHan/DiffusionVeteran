@@ -4,6 +4,7 @@
 results
 outputs
 wandb
+amlt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

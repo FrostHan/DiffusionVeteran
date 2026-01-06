@@ -1,5 +1,5 @@
 import os
-
+import time
 import d4rl
 import gym
 import hydra, wandb, uuid
@@ -24,6 +24,9 @@ from utils import set_seed
 from tqdm import tqdm
 from omegaconf import OmegaConf
 
+import logging
+
+logging.basicConfig(level=logging.INFO)
 
 @hydra.main(config_path="../configs/veteran/mujoco", config_name="mujoco", version_base=None)
 def pipeline(args):
@@ -40,57 +43,75 @@ def pipeline(args):
             config=OmegaConf.to_container(args, resolve=True)
         )
 
-    set_seed(args.seed)
+    set_seed(abs(int(args.seed)))
     
-    # base config
-    base_path = f"{args.pipeline_name}_H{args.task.planner_horizon}_Jump{args.task.stride}"
-    base_path += f"_next{args.planner_next_obs_loss_weight}"
-    # guidance type
-    base_path += f"_{args.guidance_type}"
-    # For Planner
-    base_path += f"_{args.planner_net}"
-    if args.planner_net == "transformer":
-        base_path += f"_d{args.planner_depth}"
-        base_path += f"_width{args.planner_d_model}"
-    elif args.planner_net == "unet":
-        base_path += f"_width{args.unet_dim}"
+    # # base config
+    # base_path = f"{args.pipeline_name}_H{args.task.planner_horizon}_Jump{args.task.stride}"
+    # base_path += f"_next{args.planner_next_obs_loss_weight}"
+    # # guidance type
+    # base_path += f"_{args.guidance_type}"
+    # # For Planner
+    # base_path += f"_{args.planner_net}"
+    # if args.planner_net == "transformer":
+    #     base_path += f"_d{args.planner_depth}"
+    #     base_path += f"_width{args.planner_d_model}"
+    # elif args.planner_net == "unet":
+    #     base_path += f"_width{args.unet_dim}"
     
-    if not args.planner_predict_noise:
-        base_path += f"_pred_x0"
+    # if not args.planner_predict_noise:
+    #     base_path += f"_pred_x0"
     
-    # pipeline_type
-    base_path += f"_{args.pipeline_type}"
-    base_path += f"_dp{args.use_diffusion_invdyn}"
-    base_path += f"_penalty{args.terminal_penalty}"
-    base_path += f"_bonus{args.full_traj_bonus}"
-    base_path += f"_gamma{args.discount}"
-    base_path += f"_adv{args.use_weighted_regression}"
-    base_path += f"_weight{args.weight_factor}"
+    # # pipeline_type
+    # base_path += f"_{args.pipeline_type}"
+    # base_path += f"_dp{args.use_diffusion_invdyn}"
+    # base_path += f"_penalty{args.terminal_penalty}"
+    # base_path += f"_bonus{args.full_traj_bonus}"
+    # base_path += f"_gamma{args.discount}"
+    # base_path += f"_adv{args.use_weighted_regression}"
+    # base_path += f"_weight{args.weight_factor}"
     # task name
-    base_path += f"/{args.task.env_name}/"
     
-    save_path = f"{args.save_dir}/" + base_path
-    video_path = "video_outputs/" + base_path
+    save_dir = os.getenv('AMLT_OUTPUT_DIR', args.save_dir)
+    
+    base_path = "{}/".format(args.task.env_name)
+    
+    save_path = os.path.join(save_dir, base_path)
+    data_path = os.path.join(os.getenv("AMLT_DATA_DIR", "./results/"), 
+                             os.getenv("AMLT_EXPERIMENT_NAME", "."),
+                             os.getenv("AMLT_JOB_NAME", "."),
+                             base_path)
+
+    logging.info("----------------------------")
+    logging.info(f"Save_Path:{save_path}")
+    logging.info(f"Data_Path:{data_path}")
+    logging.info("----------------------------")
     
     if os.path.exists(save_path) is False:
         os.makedirs(save_path)
     
-    if os.path.exists(video_path) is False:
-        os.makedirs(video_path)
+    if os.path.exists(data_path) is False:
+        os.makedirs(data_path)
 
     # ---------------------- Create Dataset ----------------------
     env = gym.make(args.task.env_name)
+    env_dataset = env.get_dataset()
+    
+    if args.action_arctanh == 1:
+        env_dataset["actions"] = np.arctanh(env_dataset["actions"].clip(-0.999, 0.999)) 
+    
     planner_dataset = DV_D4RLMuJoCoSeqDataset(
-        env.get_dataset(), horizon=args.task.planner_horizon, discount=args.discount, 
+        env_dataset, horizon=args.task.planner_horizon, discount=args.discount, 
         stride=args.task.stride, center_mapping=(args.guidance_type!="cfg"),
         terminal_penalty=args.terminal_penalty,
-        full_traj_bonus=args.full_traj_bonus
+        full_traj_bonus=args.full_traj_bonus,
+        normalize_action=args.normalize_action
     )
     policy_dataset = DV_D4RLMuJoCoSeqDataset(
-        env.get_dataset(), horizon=args.task.planner_horizon, discount=args.discount, 
+        env_dataset, horizon=args.task.planner_horizon, discount=args.discount, 
         stride=args.task.stride, center_mapping=(args.guidance_type!="cfg"),
         terminal_penalty=args.terminal_penalty,
-        full_traj_bonus=args.full_traj_bonus
+        full_traj_bonus=args.full_traj_bonus,
+        normalize_action=args.normalize_action
     )
     planner_dataloader = DataLoader(
         planner_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4, pin_memory=True, drop_last=True)
@@ -178,8 +199,22 @@ def pipeline(args):
 
     # ---------------------- Training ----------------------
     if args.mode == "train":
-        # Planner
+        # Planner initialization
         planner_lr_scheduler = CosineAnnealingLR(planner.optimizer, args.planner_diffusion_gradient_steps)
+        n_gradient_step = 0
+        
+        if os.path.exists(os.path.join(data_path, f"planner_ckpt_latest.pt")):            
+            print("========================= continue training from previous ckpt =============================")
+            print(f"Loaded Planner Checkpoint from {os.path.join(data_path, 'planner_ckpt_latest.pt')}")
+            print(f"Starting from gradient step: {n_gradient_step}")
+            print("============================================================================================")
+            planner.load(os.path.join(data_path, f"planner_ckpt_latest.pt"))
+            planner_lr_scheduler.load_state_dict(torch.load(os.path.join(data_path, f"planner_lr_scheduler_latest.pt")))
+            planner.optimizer.load_state_dict(torch.load(os.path.join(data_path, f"planner_optim_latest.pt")))
+            n_gradient_step = int(planner_lr_scheduler.last_epoch)
+            if n_gradient_step >= args.planner_diffusion_gradient_steps:
+                exit("Training already finished according to lr scheduler.")
+
         planner.train()
         
         # Critic or classifier
@@ -208,7 +243,7 @@ def pipeline(args):
             "avg_loss_classifier": 0
         }
         
-        pbar = tqdm(total=max(args.planner_diffusion_gradient_steps, args.policy_diffusion_gradient_steps)/args.log_interval)
+        # pbar = tqdm(total=max(args.planner_diffusion_gradient_steps, args.policy_diffusion_gradient_steps)/args.log_interval)
         for planner_batch, policy_batch in loop_two_dataloaders(planner_dataloader, policy_dataloader):
 
             planner_horizon_obs = planner_batch["obs"]["state"].to(args.device)
@@ -227,7 +262,7 @@ def pipeline(args):
                 if args.guidance_type == "cfg":
                     log["avg_loss_planner"] += planner.update(planner_horizon_data, planner_td_val)['loss']
                 else:
-                    if args.use_weighted_regression:
+                    if args.use_weighted_regression and args.weight_factor > 0:
                         weighted_regression_tensor = torch.exp( (planner_td_val - 1) * args.weight_factor)
                         log["avg_loss_planner"] += planner.update(planner_horizon_data, weighted_regression_tensor=weighted_regression_tensor)['loss']
                     else:
@@ -274,7 +309,7 @@ def pipeline(args):
                 print(log)
                 if args.enable_wandb:
                     wandb.log(log, step=n_gradient_step + 1)
-                pbar.update(1)
+                # pbar.update(1)
                 log = {
                     "val_pred": 0,
                     "val_loss": 0,
@@ -285,22 +320,23 @@ def pipeline(args):
 
             # ----------- Saving ------------
             if (n_gradient_step + 1) % args.save_interval == 0:
-                planner.save(save_path + f"planner_ckpt_{n_gradient_step + 1}.pt")
-                planner.save(save_path + f"planner_ckpt_latest.pt")
+                planner.save(os.path.join(data_path, f"planner_ckpt_latest.pt"))
+                torch.save(planner_lr_scheduler.state_dict(), os.path.join(data_path, f"planner_lr_scheduler_latest.pt"))
+                torch.save(planner.optimizer.state_dict(), os.path.join(data_path, f"planner_optim_latest.pt"))
                 if args.guidance_type=="MCSS":
-                    torch.save({"critic": critic.state_dict(),}, save_path + f"critic_ckpt_{n_gradient_step + 1}.pt")
-                    torch.save({"critic": critic.state_dict(),}, save_path + f"critic_ckpt_latest.pt")
+                    torch.save({"critic": critic.state_dict(),}, os.path.join(data_path, f"critic_ckpt_{n_gradient_step + 1}.pt"))
+                    torch.save({"critic": critic.state_dict(),}, os.path.join(data_path, f"critic_ckpt_latest.pt"))
                 elif args.guidance_type=="cg":
-                    planner.classifier.save(save_path + f"classifier_ckpt_{n_gradient_step + 1}.pt")
-                    planner.classifier.save(save_path + f"classifier_ckpt_latest.pt")
+                    planner.classifier.save(data_path + f"classifier_ckpt_{n_gradient_step + 1}.pt")
+                    planner.classifier.save(data_path + f"classifier_ckpt_latest.pt")
                 
                 if args.pipeline_type == "separate":
                     if args.use_diffusion_invdyn:
-                        policy.save(save_path + f"policy_ckpt_{n_gradient_step + 1}.pt")
-                        policy.save(save_path + f"policy_ckpt_latest.pt")
+                        policy.save(data_path + f"policy_ckpt_{n_gradient_step + 1}.pt")
+                        policy.save(data_path + f"policy_ckpt_latest.pt")
                     else:
-                        invdyn.save(save_path + f"invdyn_ckpt_{n_gradient_step + 1}.pt")
-                        invdyn.save(save_path + f"invdyn_ckpt_latest.pt")
+                        invdyn.save(data_path + f"invdyn_ckpt_{n_gradient_step + 1}.pt")
+                        invdyn.save(data_path + f"invdyn_ckpt_latest.pt")
 
             n_gradient_step += 1
             if n_gradient_step >= args.planner_diffusion_gradient_steps and n_gradient_step >= args.policy_diffusion_gradient_steps:
@@ -308,10 +344,10 @@ def pipeline(args):
 
     elif args.mode == "train_expected_value":
         from copy import deepcopy
-        MAX_STEPS = 1_000_000
+        MAX_STEPS = 200_000
         
         dataset = D4RLMuJoCoTDDataset(d4rl.qlearning_dataset(env))
-        td_dataloader = DataLoader(dataset, batch_size=256, shuffle=True, num_workers=4, persistent_workers=True)
+        td_dataloader = DataLoader(dataset, batch_size=1024, shuffle=True, num_workers=4, persistent_workers=True)
         obs_dim, act_dim = dataset.o_dim, dataset.a_dim
         
         EV = IDQLVNet(obs_dim, hidden_dim=256).to(args.device)
@@ -320,7 +356,7 @@ def pipeline(args):
 
         n_gradient_step = 0
         log = dict.fromkeys(["loss_v", "v_mean"], 0.)
-        pbar = tqdm(total=MAX_STEPS/args.log_interval)
+        # pbar = tqdm(total=MAX_STEPS/args.log_interval)
         for batch in loop_dataloader(td_dataloader):
             obs, next_obs = batch["obs"]["state"].to(args.device), batch["next_obs"]["state"].to(args.device)
             act = batch["act"].to(args.device)
@@ -347,75 +383,86 @@ def pipeline(args):
                 log = {k: v / args.log_interval for k, v in log.items()}
                 log["gradient_steps"] = n_gradient_step + 1
                 print(log)
-                pbar.update(1)
+                # pbar.update(1)
                 log = dict.fromkeys(["loss_v", "v_mean"], 0.)
 
             if (n_gradient_step + 1) % args.save_interval == 0:
-                torch.save({"ev": EV.state_dict()}, save_path + f"EV_ckpt_{n_gradient_step + 1}.pt")
-                torch.save({"ev": EV.state_dict()}, save_path + f"EV_ckpt_latest.pt")
+                torch.save({"ev": EV.state_dict()}, os.path.join(data_path, f"EV_ckpt_{n_gradient_step + 1}.pt"))
+                torch.save({"ev": EV.state_dict()}, os.path.join(data_path, f"EV_ckpt_latest.pt"))
 
             n_gradient_step += 1
-            if n_gradient_step > 1_000_000:
+            if n_gradient_step > MAX_STEPS:
                 break
     
     # ---------------------- Inference ----------------------
     elif args.mode == "inference":
         
+        final_path = os.path.join(save_path, "result_{}.mat".format(args.critic_ckpt))
+        
+        if os.path.exists(final_path):
+            print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            print("Inference already done, result file exists at:", final_path)
+            print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            if os.getenv("AMLT_OUTPUT_DIR", None) is not None:
+                return None
+            
         if args.guidance_type=="MCSS":
             # load planner
-            planner.load(save_path + f"planner_ckpt_{args.planner_ckpt}.pt")
+            planner.load(data_path + f"planner_ckpt_{args.planner_ckpt}.pt")
             planner.eval()
             # load critic
-            critic_ckpt = torch.load(save_path + f"critic_ckpt_{args.critic_ckpt}.pt")
-            critic.load_state_dict(critic_ckpt["critic"])
-            critic.eval()
+            if not args.value_type == "ev":
+                critic_ckpt = torch.load(os.path.join(data_path, f"critic_ckpt_{args.critic_ckpt}.pt"))
+                critic.load_state_dict(critic_ckpt["critic"])
+                critic.eval()
             # load policy
             if args.pipeline_type == "separate":
                 if args.use_diffusion_invdyn:
-                    policy.load(save_path + f"policy_ckpt_{args.policy_ckpt}.pt")
+                    policy.load(os.path.join(data_path, f"policy_ckpt_{args.policy_ckpt}.pt"))
                     policy.eval()
                 else:
-                    invdyn.load(save_path + f"invdyn_ckpt_{args.invdyn_ckpt}.pt")
+                    invdyn.load(os.path.join(data_path, f"invdyn_ckpt_{args.invdyn_ckpt}.pt"))
                     invdyn.eval()
         
         elif args.guidance_type=="cfg":
             # load planner
-            planner.load(save_path + f"planner_ckpt_{args.planner_ckpt}.pt")
+            planner.load(os.path.join(data_path, f"planner_ckpt_{args.planner_ckpt}.pt"))
             planner.eval()
             # load policy
             if args.pipeline_type == "separate":
                 if args.use_diffusion_invdyn:
-                    policy.load(save_path + f"policy_ckpt_{args.policy_ckpt}.pt")
+                    policy.load(os.path.join(data_path, f"policy_ckpt_{args.policy_ckpt}.pt"))
                     policy.eval()
                 else:
-                    invdyn.load(save_path + f"invdyn_ckpt_{args.invdyn_ckpt}.pt")
+                    invdyn.load(os.path.join(data_path, f"invdyn_ckpt_{args.invdyn_ckpt}.pt"))
                     invdyn.eval()
             
         elif args.guidance_type=="cg":
             # load planner
-            planner.load(save_path + f"planner_ckpt_{args.planner_ckpt}.pt")
+            planner.load(os.path.join(data_path, f"planner_ckpt_{args.planner_ckpt}.pt"))
             # load classifier
-            planner.classifier.load(save_path + f"classifier_ckpt_{args.planner_ckpt}.pt")
+            planner.classifier.load(os.path.join(data_path, f"classifier_ckpt_{args.planner_ckpt}.pt"))
             planner.eval()
             # load policy
             if args.pipeline_type == "separate":
                 if args.use_diffusion_invdyn:
-                    policy.load(save_path + f"policy_ckpt_{args.policy_ckpt}.pt")
+                    policy.load(os.path.join(data_path, f"policy_ckpt_{args.policy_ckpt}.pt"))
                     policy.eval()
                 else:
-                    invdyn.load(save_path + f"invdyn_ckpt_{args.invdyn_ckpt}.pt")
+                    invdyn.load(os.path.join(data_path, f"invdyn_ckpt_{args.invdyn_ckpt}.pt"))
                     invdyn.eval()
                     
         
-        MAX_VALUE_STEPS = 1_000_000
-        
         EV = IDQLVNet(obs_dim, hidden_dim=256).to(args.device)
-        ev_ckpt = torch.load(save_path + f"EV_ckpt_{MAX_VALUE_STEPS}.pt")
+        ev_ckpt = torch.load(os.path.join(data_path, f"EV_ckpt_{args.critic_ckpt}.pt"))
         EV.load_state_dict(ev_ckpt["ev"])
         EV.eval()
 
         env_eval = gym.vector.make(args.task.env_name, args.num_envs)
+        
         normalizer = planner_dataset.get_normalizer()
+        normalizer_state = normalizer["state"]
+        normalizer_action = normalizer["action"]
         episode_rewards = []
         
         for i in range(args.num_episodes):
@@ -426,7 +473,7 @@ def pipeline(args):
                 if args.guidance_type == "MCSS":
                     planner_prior = torch.zeros((args.num_envs * args.planner_num_candidates, args.task.planner_horizon, planner_dim), device=args.device)
                     
-                    obs = torch.tensor(normalizer.normalize(obs), device=args.device, dtype=torch.float32)
+                    obs = torch.tensor(normalizer_state.normalize(obs), device=args.device, dtype=torch.float32)
                     obs_repeat = obs.unsqueeze(1).repeat(1, args.planner_num_candidates, 1).view(-1, obs_dim)
 
                     # sample trajectories
@@ -438,7 +485,7 @@ def pipeline(args):
                     
                     # resample
                     with torch.no_grad():
-                        value_td_ev = EV(traj)[:, 1:]
+                        value_td_ev = EV(traj[:, :, :obs_dim])[:, 1:]
                         value = value_td_ev.sum(dim=1)
                         value = value.view(args.num_envs, args.planner_num_candidates)
                         idx = torch.argmax(value, -1)
@@ -449,7 +496,7 @@ def pipeline(args):
                     planner_prior = torch.zeros((args.num_envs, args.task.planner_horizon, planner_dim), device=args.device)
                     condition = torch.ones((args.num_envs, 1), device=args.device) * args.task.planner_target_return
                     
-                    obs = torch.tensor(normalizer.normalize(obs), device=args.device, dtype=torch.float32)
+                    obs = torch.tensor(normalizer_state.normalize(obs), device=args.device, dtype=torch.float32)
 
                     # sample trajectories
                     planner_prior[:, 0, :obs_dim] = obs
@@ -461,7 +508,7 @@ def pipeline(args):
                 elif args.guidance_type == "cg":
                     planner_prior = torch.zeros((args.num_envs * args.planner_num_candidates, args.task.planner_horizon, planner_dim), device=args.device)
                     
-                    obs = torch.tensor(normalizer.normalize(obs), device=args.device, dtype=torch.float32)
+                    obs = torch.tensor(normalizer_state.normalize(obs), device=args.device, dtype=torch.float32)
                     obs_repeat = obs.unsqueeze(1).repeat(1, args.planner_num_candidates, 1).view(-1, obs_dim)
                     
                     planner_prior[:, 0, :obs_dim] = obs_repeat
@@ -506,6 +553,11 @@ def pipeline(args):
                 else:
                     act = traj[:, 0, obs_dim:]
                     act = act.cpu().numpy()
+                
+                act0 = normalizer_action.unnormalize(act)
+                
+                if args.action_arctanh == 1:
+                    act = np.tanh(act0)
                     
                 # step
                 obs, rew, done, info = env_eval.step(act)
@@ -514,7 +566,8 @@ def pipeline(args):
                 cum_done = done if cum_done is None else np.logical_or(cum_done, done)
                 ep_reward += (rew * (1 - cum_done)) if t < args.task.max_path_length else rew
                 # print(f'[t={t}] xy: {np.around(obs[:, :2], 2)}')
-                print(f'[t={t}] rew: {np.around((rew * (1 - cum_done)), 2)}')
+                if t % args.print_interval == 0:
+                    print(f'[t={t}] rew: {np.array2string((rew * (1 - cum_done)), precision=1, separator=", ", suppress_small=True)}')
 
             episode_rewards.append(ep_reward)
 
@@ -522,7 +575,17 @@ def pipeline(args):
         episode_rewards = np.array(episode_rewards).reshape(-1) * 100
         mean = np.mean(episode_rewards)
         err = np.std(episode_rewards) / np.sqrt(len(episode_rewards))
-        print(mean, err)
+        
+        print("================================================")
+        print(args.task.env_name, mean, err)
+        print("================================================")
+
+        import scipy.io as sio
+        data = {'rews': episode_rewards, "task_name": args.task.env_name}
+        
+        if os.path.exists(os.path.dirname(final_path)) is False:
+            os.makedirs(os.path.dirname(final_path))
+        sio.savemat(final_path, data)
 
         if args.enable_wandb:
             wandb.log({'Mean Reward': mean, 'Error': err})
@@ -534,4 +597,5 @@ def pipeline(args):
 
 
 if __name__ == "__main__":
+    time.sleep(np.random.rand() * 10)
     pipeline()
