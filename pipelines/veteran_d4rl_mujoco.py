@@ -19,7 +19,7 @@ from cleandiffuser.nn_condition import MLPCondition, IdentityCondition
 from cleandiffuser.nn_diffusion import DiT1d, DVInvMlp
 from cleandiffuser.nn_classifier import HalfJannerUNet1d
 from cleandiffuser.nn_diffusion import JannerUNet1d
-from cleandiffuser.utils import report_parameters, DD_RETURN_SCALE, DVHorizonCritic, IDQLVNet
+from cleandiffuser.utils import report_parameters, DD_RETURN_SCALE, DVHorizonCritic, IDQLVNet, IQL
 from utils import set_seed
 from tqdm import tqdm
 from omegaconf import OmegaConf
@@ -45,6 +45,7 @@ def pipeline(args):
 
     set_seed(abs(int(args.seed)))
     
+        
     # # base config
     # base_path = f"{args.pipeline_name}_H{args.task.planner_horizon}_Jump{args.task.stride}"
     # base_path += f"_next{args.planner_next_obs_loss_weight}"
@@ -80,7 +81,37 @@ def pipeline(args):
                              os.getenv("AMLT_EXPERIMENT_NAME", "."),
                              os.getenv("AMLT_JOB_NAME", "."),
                              base_path)
-
+    
+    # ------------- For Inference --------------
+    if args.mode == "inference":
+        
+        if os.getenv("AMLT_OUTPUT_DIR", None) is not None:
+            
+            model_path = os.path.join(os.getenv("AMLT_DATA_DIR", "./results/"), 
+                                    "MD_test_mujoco/",
+                                    "search_pd_{}_pdm_{}_pt_{}_seed_{}_task_{}".format(args.planner_depth, args.planner_d_model, args.pipeline_type, args.seed, args.task.env_name),
+                                    args.task.env_name)
+            
+            planner_path = os.path.join(model_path, "planner_ckpt_{}.pt".format(args.planner_ckpt))
+            policy_path = os.path.join(model_path, "policy_ckpt_{}.pt".format(args.policy_ckpt))
+            
+            EV_path = os.path.join(os.getenv("AMLT_DATA_DIR", "./results/"),
+                                "MD_EV_mujoco/",
+                                "search_gamma_{}_task_{}_tau_{}".format(args.discount, args.task.env_name, args.task.iql_tau),
+                                args.task.env_name,
+                                "EV_ckpt_{}.pt".format(args.critic_ckpt))
+            
+        else:
+            planner_path = os.path.join(data_path, f"planner_ckpt_{args.planner_ckpt}.pt")
+            policy_path = os.path.join(data_path, f"policy_ckpt_{args.policy_ckpt}.pt")
+            EV_path = os.path.join(data_path, f"EV_ckpt_{args.critic_ckpt}.pt")
+            
+        print("================= Inference Paths =================")
+        print(f"Planner Path: {planner_path}")
+        print(f"Policy Path: {policy_path}")
+        print(f"EV Path: {EV_path}")
+        print("===================================================")
+    
     logging.info("----------------------------")
     logging.info(f"Save_Path:{save_path}")
     logging.info(f"Data_Path:{data_path}")
@@ -327,16 +358,16 @@ def pipeline(args):
                     torch.save({"critic": critic.state_dict(),}, os.path.join(data_path, f"critic_ckpt_{n_gradient_step + 1}.pt"))
                     torch.save({"critic": critic.state_dict(),}, os.path.join(data_path, f"critic_ckpt_latest.pt"))
                 elif args.guidance_type=="cg":
-                    planner.classifier.save(data_path + f"classifier_ckpt_{n_gradient_step + 1}.pt")
-                    planner.classifier.save(data_path + f"classifier_ckpt_latest.pt")
+                    planner.classifier.save(os.path.join(data_path, f"classifier_ckpt_{n_gradient_step + 1}.pt"))
+                    planner.classifier.save(os.path.join(data_path, f"classifier_ckpt_latest.pt"))
                 
                 if args.pipeline_type == "separate":
                     if args.use_diffusion_invdyn:
-                        policy.save(data_path + f"policy_ckpt_{n_gradient_step + 1}.pt")
-                        policy.save(data_path + f"policy_ckpt_latest.pt")
+                        policy.save(os.path.join(data_path, f"policy_ckpt_{n_gradient_step + 1}.pt"))
+                        policy.save(os.path.join(data_path, f"policy_ckpt_latest.pt"))
                     else:
-                        invdyn.save(data_path + f"invdyn_ckpt_{n_gradient_step + 1}.pt")
-                        invdyn.save(data_path + f"invdyn_ckpt_latest.pt")
+                        invdyn.save(os.path.join(data_path, f"invdyn_ckpt_{n_gradient_step + 1}.pt"))
+                        invdyn.save(os.path.join(data_path, f"invdyn_ckpt_latest.pt"))
 
             n_gradient_step += 1
             if n_gradient_step >= args.planner_diffusion_gradient_steps and n_gradient_step >= args.policy_diffusion_gradient_steps:
@@ -350,45 +381,50 @@ def pipeline(args):
         td_dataloader = DataLoader(dataset, batch_size=1024, shuffle=True, num_workers=4, persistent_workers=True)
         obs_dim, act_dim = dataset.o_dim, dataset.a_dim
         
-        EV = IDQLVNet(obs_dim, hidden_dim=256).to(args.device)
-        EV_target = deepcopy(EV)
-        v_optim = torch.optim.Adam(EV.parameters(), lr=3e-4)
-
+        tau = args.task.iql_tau
+        
+        iql_agent = IQL(
+            obs_dim=obs_dim, 
+            act_dim=act_dim, 
+            tau=tau, 
+            discount=args.discount, 
+            hidden_dim=256
+        ).to(args.device)
+        # -----------------------------
+        
         n_gradient_step = 0
-        log = dict.fromkeys(["loss_v", "v_mean"], 0.)
-        # pbar = tqdm(total=MAX_STEPS/args.log_interval)
+        log = dict.fromkeys(["loss_v", "loss_q", "v_mean"], 0.)
+        
+        # pbar = tqdm(total=MAX_STEPS/args.log_interval)        
         for batch in loop_dataloader(td_dataloader):
             obs, next_obs = batch["obs"]["state"].to(args.device), batch["next_obs"]["state"].to(args.device)
             act = batch["act"].to(args.device)
             rew = batch["rew"].to(args.device)
             tml = batch["tml"].to(args.device)
 
-            current_v = EV(obs)
-            next_v = EV_target(next_obs).detach()
-            target_v = (rew + (1 - tml) * args.discount * next_v).detach()
+            v_loss = iql_agent.update_V(obs, act)
+            q_loss = iql_agent.update_Q(obs, act, rew, next_obs, tml)
             
-            v_loss = F.mse_loss(current_v, target_v)
-            v_optim.zero_grad()
-            v_loss.backward()
-            v_optim.step()
+            with torch.no_grad():
+                current_v_mean = iql_agent.V(obs).mean().item()
+            # -----------------------------------
             
-            mu = 0.995
-            for p, p_targ in zip(EV.parameters(), EV_target.parameters()):
-                p_targ.data = mu * p_targ.data + (1 - mu) * p.data
-            
-            log["loss_v"] += v_loss.mean().item()
-            log["v_mean"] += current_v.mean().item()
+            log["loss_v"] += v_loss
+            log["loss_q"] += q_loss
+            log["v_mean"] += current_v_mean
 
             if (n_gradient_step + 1) % args.log_interval == 0:
                 log = {k: v / args.log_interval for k, v in log.items()}
                 log["gradient_steps"] = n_gradient_step + 1
                 print(log)
-                # pbar.update(1)
-                log = dict.fromkeys(["loss_v", "v_mean"], 0.)
+                log = dict.fromkeys(["loss_v", "loss_q", "v_mean"], 0.)
 
+            # --------------------------
             if (n_gradient_step + 1) % args.save_interval == 0:
-                torch.save({"ev": EV.state_dict()}, os.path.join(data_path, f"EV_ckpt_{n_gradient_step + 1}.pt"))
-                torch.save({"ev": EV.state_dict()}, os.path.join(data_path, f"EV_ckpt_latest.pt"))
+                torch.save({"ev": iql_agent.V.state_dict(), "eq": iql_agent.Q.state_dict()},
+                           os.path.join(data_path, f"EV_ckpt_{n_gradient_step + 1}.pt"))
+                torch.save({"ev": iql_agent.V.state_dict(), "eq": iql_agent.Q.state_dict()},
+                           os.path.join(data_path, f"EV_ckpt_latest.pt"))
 
             n_gradient_step += 1
             if n_gradient_step > MAX_STEPS:
@@ -397,7 +433,7 @@ def pipeline(args):
     # ---------------------- Inference ----------------------
     elif args.mode == "inference":
         
-        final_path = os.path.join(save_path, "result_{}.mat".format(args.critic_ckpt))
+        final_path = os.path.join(save_path, "result_pd_{}.mat".format(args.planner_depth))
         
         if os.path.exists(final_path):
             print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
@@ -408,21 +444,20 @@ def pipeline(args):
             
         if args.guidance_type=="MCSS":
             # load planner
-            planner.load(data_path + f"planner_ckpt_{args.planner_ckpt}.pt")
+            planner.load(planner_path)
             planner.eval()
             # load critic
             if not args.value_type == "ev":
-                critic_ckpt = torch.load(os.path.join(data_path, f"critic_ckpt_{args.critic_ckpt}.pt"))
-                critic.load_state_dict(critic_ckpt["critic"])
-                critic.eval()
+                raise NotImplementedError
             # load policy
             if args.pipeline_type == "separate":
                 if args.use_diffusion_invdyn:
-                    policy.load(os.path.join(data_path, f"policy_ckpt_{args.policy_ckpt}.pt"))
+                    policy.load(policy_path)
                     policy.eval()
                 else:
-                    invdyn.load(os.path.join(data_path, f"invdyn_ckpt_{args.invdyn_ckpt}.pt"))
-                    invdyn.eval()
+                    raise NotImplementedError
+                    # invdyn.load(os.path.join(data_path, f"invdyn_ckpt_{args.invdyn_ckpt}.pt"))
+                    # invdyn.eval()
         
         elif args.guidance_type=="cfg":
             # load planner
@@ -431,11 +466,12 @@ def pipeline(args):
             # load policy
             if args.pipeline_type == "separate":
                 if args.use_diffusion_invdyn:
-                    policy.load(os.path.join(data_path, f"policy_ckpt_{args.policy_ckpt}.pt"))
+                    policy.load(policy_path)
                     policy.eval()
                 else:
-                    invdyn.load(os.path.join(data_path, f"invdyn_ckpt_{args.invdyn_ckpt}.pt"))
-                    invdyn.eval()
+                    raise NotImplementedError
+                    # invdyn.load(os.path.join(data_path, f"invdyn_ckpt_{args.invdyn_ckpt}.pt"))
+                    # invdyn.eval()
             
         elif args.guidance_type=="cg":
             # load planner
@@ -446,15 +482,16 @@ def pipeline(args):
             # load policy
             if args.pipeline_type == "separate":
                 if args.use_diffusion_invdyn:
-                    policy.load(os.path.join(data_path, f"policy_ckpt_{args.policy_ckpt}.pt"))
+                    policy.load(policy_path)
                     policy.eval()
                 else:
-                    invdyn.load(os.path.join(data_path, f"invdyn_ckpt_{args.invdyn_ckpt}.pt"))
-                    invdyn.eval()
+                    raise NotImplementedError
+                    # invdyn.load(os.path.join(data_path, f"invdyn_ckpt_{args.invdyn_ckpt}.pt"))
+                    # invdyn.eval()
                     
         
         EV = IDQLVNet(obs_dim, hidden_dim=256).to(args.device)
-        ev_ckpt = torch.load(os.path.join(data_path, f"EV_ckpt_{args.critic_ckpt}.pt"))
+        ev_ckpt = torch.load(EV_path)
         EV.load_state_dict(ev_ckpt["ev"])
         EV.eval()
 
