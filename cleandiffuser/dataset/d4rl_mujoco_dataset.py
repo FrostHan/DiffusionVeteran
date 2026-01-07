@@ -127,7 +127,7 @@ class DV_D4RLMuJoCoSeqDataset(BaseDataset):
                     rewards[i] = rewards[i] + full_traj_bonus if full_traj_bonus is not None else rewards[i]
 
                 self.seq_obs[path_idx, :path_length] = normed_observations[ptr:i + 1]
-                self.seq_act[path_idx, :path_length] = actions[ptr:i + 1]
+                self.seq_act[path_idx, :path_length] = normed_actions[ptr:i + 1]
                 self.seq_rew[path_idx, :path_length] = rewards[ptr:i + 1][:, None]
 
                 max_start = path_length - (horizon - 1) * stride - 1

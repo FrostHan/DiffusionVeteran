@@ -35,6 +35,8 @@ planner_predict_noise: True
 planner_next_obs_loss_weight: 1
 planner_ema_rate: 0.9999
 unet_dim: 32
+use_weighted_regression: 1
+weight_factor: 0
 action_arctanh: 0
 normalize_action: 0
 
@@ -61,7 +63,7 @@ save_interval: 100000
 num_envs: 50
 num_episodes: 20
 planner_num_candidates: 50
-planner_ckpt: 1000000
+planner_ckpt: latest
 critic_ckpt: 200000
 policy_ckpt: 1000000
 invdyn_ckpt: 200000

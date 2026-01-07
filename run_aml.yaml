@@ -68,7 +68,7 @@ search:
     - pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
     - pip install colorednoise
     - pip install gymnasium 
-    - python pipelines/veteran_d4rl_mujoco.py mode="train" seed={seed} task={task} planner_depth={pd} pipeline_type={pt} planner_d_model={pdm} weight_factor={wf}
+    - python pipelines/veteran_d4rl_mujoco.py mode="train" seed={seed} task={task} planner_depth={pd} pipeline_type={pt} planner_d_model={pdm} weight_factor={wf} action_arctanh={aa} normalize_action={na}
     # - python pipelines/veteran_d4rl_mujoco.py mode="train_expected_value" task={task} task.iql_tau={tau} discount={gamma}
     # - python pipelines/veteran_d4rl_mujoco.py mode="inference" seed={seed} task={task} planner_depth={pd} pipeline_type={pt} planner_d_model={pdm} task.iql_tau=0.7 discount=0.99 print_interval=10
     # - bash scripts/batch_inference_DV_mujoco_delayed.sh {seed} {last} {delay} {pd} {ph} {nb} {tmp} {gamma} {lr} {tau} {wf}
@@ -85,11 +85,19 @@ search:
     
     - name: pt
       spec: discrete
-      values: ["separate", "joint"]
+      values: ["joint"]
 
     - name: pdm
       spec: discrete
       values: [128]
+
+    - name: aa
+      spec: discrete
+      values: [0, 1]
+
+    - name: na
+      spec: discrete
+      values: [0, 1]
 
     # - name: tau
     #   spec: discrete
@@ -101,11 +109,11 @@ search:
 
     - name: wf
       spec: discrete
-      values: [0, 0.2, 0.5, 1.0, 2.0, 5.0, 20.0]
+      values: [0, 0.2, 1, 5, 25]
 
     - name: pd
       spec: discrete
-      values: [2, 4, 8] # planner depth
+      values: [4] # planner depth
 
     - name: seed
       spec: discrete

@@ -58,6 +58,7 @@ class DV_D4RLAntmazeSeqDataset(BaseDataset):
             learn_policy: bool = False,
             stride: int = 1,
             only_learn_reached_policy: bool = False,
+            normalize_action: bool = False,
     ):
         super().__init__()
 
@@ -70,10 +71,18 @@ class DV_D4RLAntmazeSeqDataset(BaseDataset):
         
         self.learn_policy = learn_policy
         self.stride = stride
+        self.normalize_action = normalize_action
 
         self.normalizers = {
-            "state": GaussianNormalizer(observations)}
+            "state": GaussianNormalizer(observations),
+            "action": GaussianNormalizer(actions)}
         normed_observations = self.normalizers["state"].normalize(observations)
+        normed_actions = self.normalizers["action"].normalize(actions)
+        
+        if not normalize_action:
+            normed_actions = actions
+            self.normalizers["action"].mean = np.zeros_like(self.normalizers["action"].mean)
+            self.normalizers["action"].std = np.ones_like(self.normalizers["action"].std)
 
         self.horizon = horizon
         self.o_dim, self.a_dim = observations.shape[-1], actions.shape[-1]
@@ -104,7 +113,7 @@ class DV_D4RLAntmazeSeqDataset(BaseDataset):
                 _seq_tml = np.zeros((max_path_length + (horizon - 1) * stride, 1), dtype=np.float32)
                 
                 _seq_obs[:path_length] = normed_observations[ptr:index+1]
-                _seq_act[:path_length] = actions[ptr:index+1]
+                _seq_act[:path_length] = normed_actions[ptr:index+1]
                 _seq_rew[:path_length] = rewards[ptr:index+1][:, None]
                 _seq_tml[:path_length] = terminals[ptr:index+1][:, None]
                 
@@ -128,7 +137,7 @@ class DV_D4RLAntmazeSeqDataset(BaseDataset):
                 _seq_tml = np.zeros((max_path_length + (horizon - 1) * stride, 1), dtype=np.float32)
 
                 _seq_obs[:path_length] = normed_observations[ptr:terminal_index+1]
-                _seq_act[:path_length] = actions[ptr:terminal_index+1]
+                _seq_act[:path_length] = normed_actions[ptr:terminal_index+1]
                 _seq_rew[:path_length] = rewards[ptr:terminal_index+1][:, None]
                 _seq_tml[:path_length] = terminals[ptr:terminal_index+1][:, None]
 
@@ -175,7 +184,7 @@ class DV_D4RLAntmazeSeqDataset(BaseDataset):
         print(f"min normed discounted return: {self.seq_val.min()}")
 
     def get_normalizer(self):
-        return self.normalizers["state"]
+        return self.normalizers
 
     def __len__(self):
         return len(self.indices)
