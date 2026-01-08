@@ -174,7 +174,7 @@ def pipeline(args):
     if args.guidance_type == "MCSS":
         # --------------- Horizon Critic -----------------
         critic = DVHorizonCritic(
-            planner_dim, emb_dim=args.planner_emb_dim,
+            obs_dim, emb_dim=args.planner_emb_dim,
             d_model=args.planner_d_model, n_heads=args.planner_d_model//32, depth=2, norm_type="pre").to(args.device)
         critic_optim = torch.optim.Adam(critic.parameters(), lr=args.critic_learning_rate)
         print(f"=============== Parameter Report of Value ====================================")
@@ -307,7 +307,7 @@ def pipeline(args):
             if args.guidance_type=="MCSS":
                 # ----------- Horizon Critic Gradient Step ------------    
                 if n_gradient_step <= args.planner_diffusion_gradient_steps:
-                    val_pred = critic(planner_horizon_data)
+                    val_pred = critic(planner_horizon_data[:, :, :obs_dim])
                     assert val_pred.shape == planner_td_val.shape
                     critic_loss = F.mse_loss(val_pred, planner_td_val)
                     log["val_pred"] += val_pred.mean().item()
