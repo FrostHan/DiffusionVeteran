@@ -65,7 +65,7 @@ num_episodes: 20
 planner_num_candidates: 50
 planner_ckpt: latest
 critic_ckpt: 200000
-policy_ckpt: 1000000
+policy_ckpt: latest
 invdyn_ckpt: 200000
 planner_use_ema: True
 policy_temperature: 0.5

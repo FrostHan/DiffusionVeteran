@@ -88,8 +88,12 @@ def pipeline(args):
         if os.getenv("AMLT_OUTPUT_DIR", None) is not None:
             
             model_path = os.path.join(os.getenv("AMLT_DATA_DIR", "./results/"), 
-                                    "MD_test_mujoco/",
-                                    "search_pd_{}_pdm_{}_pt_{}_seed_{}_task_{}".format(args.planner_depth, args.planner_d_model, args.pipeline_type, args.seed, args.task.env_name),
+                                    "MD_mujoco_joint/",
+                                    "search_aa_{}_na_{}_pd_{}_pdm_{}_pt_{}_seed_{}_task_{}_wf_{}".format(
+                                        args.action_arctanh, args.normalize_action,
+                                        args.planner_depth, args.planner_d_model,
+                                        args.pipeline_type, args.seed,
+                                        args.task.env_name, args.weight_factor),
                                     args.task.env_name)
             
             planner_path = os.path.join(model_path, "planner_ckpt_{}.pt".format(args.planner_ckpt))

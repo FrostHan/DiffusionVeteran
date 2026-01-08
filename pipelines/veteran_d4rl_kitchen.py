@@ -86,12 +86,7 @@ def pipeline(args):
         
         if os.getenv("AMLT_OUTPUT_DIR", None) is not None:
             
-            model_path = os.path.join(os.getenv("AMLT_DATA_DIR", "./results/"), 
-                                    "MD_test_mujoco/",
-                                    "search_aa_{}_na_{}_pd_{}_pdm_{}_pt_{}_seed_{}_task_{}".format(
-                                        args.action_arctanh, args.normalize_action, args.planner_depth,
-                                        args.planner_d_model, args.pipeline_type, args.seed, args.task.env_name),
-                                    args.task.env_name)
+            model_path = data_path
             
             planner_path = os.path.join(model_path, "planner_ckpt_{}.pt".format(args.planner_ckpt))
             policy_path = os.path.join(model_path, "policy_ckpt_{}.pt".format(args.policy_ckpt))
@@ -161,7 +156,7 @@ def pipeline(args):
     if args.guidance_type == "MCSS":
         # --------------- Horizon Critic -----------------
         critic = DVHorizonCritic(
-            planner_dim, emb_dim=args.planner_emb_dim,
+            obs_dim, emb_dim=args.planner_emb_dim,
             d_model=args.planner_d_model, n_heads=args.planner_d_model//32, depth=2, norm_type="pre").to(args.device)
         critic_optim = torch.optim.Adam(critic.parameters(), lr=args.critic_learning_rate)
         print(f"=============== Parameter Report of Value ====================================")
@@ -294,7 +289,7 @@ def pipeline(args):
             if args.guidance_type=="MCSS":
                 # ----------- Horizon Critic Gradient Step ------------    
                 if n_gradient_step <= args.planner_diffusion_gradient_steps:
-                    val_pred = critic(planner_horizon_data)
+                    val_pred = critic(planner_horizon_data[:, :, :obs_dim])
                     assert val_pred.shape == planner_td_val.shape
                     critic_loss = F.mse_loss(val_pred, planner_td_val)
                     log["val_pred"] += val_pred.mean().item()
