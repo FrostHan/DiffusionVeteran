@@ -62,6 +62,7 @@ search:
     - export MUJOCO_GL=egl
     - export MUJOCO_RENDERER=egl
     - pip install mujoco==3.3.7
+    - pip install --upgrade dm_control==1.0.20
     - pip install -r requirements.txt
     - pip install -e .
     - python -m pip install -U "pip>=24.1" "setuptools>=68" "wheel>=0.41"
@@ -71,11 +72,11 @@ search:
     # - python pipelines/veteran_d4rl_mujoco.py mode="train" seed={seed} task={task} planner_depth={pd} pipeline_type={pt} planner_d_model={pdm} weight_factor={wf} action_arctanh={aa} normalize_action={na}
     # - python pipelines/veteran_d4rl_mujoco.py mode="train_expected_value" task={task} task.iql_tau={tau} discount={gamma}
     # - python pipelines/veteran_d4rl_mujoco.py mode="inference" seed={seed} task={task} planner_depth={pd} pipeline_type={pt} planner_d_model={pdm} task.iql_tau=0.7 discount=0.99 print_interval=10
-    # - bash scripts/batch_inference_DV_mujoco.sh  {seed} {pdm} {tmp} {gamma} {tau} {wf} {aa} {na} {pt}
+    - bash scripts/batch_inference_DV_mujoco.sh  {seed} {pdm} {tmp} {gamma} {tau} {wf} {aa} {na} {pt}
     # - python pipelines/veteran_d4rl_kitchen.py mode="train"     seed={seed} task={task} planner_depth={pd} pipeline_type={pt} planner_d_model={pdm} weight_factor={wf} action_arctanh={aa} normalize_action={na}
     # - python pipelines/veteran_d4rl_kitchen.py mode="inference" seed={seed} task={task} planner_depth={pd} pipeline_type={pt} planner_d_model={pdm} weight_factor={wf} action_arctanh={aa} normalize_action={na}
-    - python pipelines/veteran_d4rl_antmaze.py mode="train"     seed={seed} task={task} planner_depth={pd} pipeline_type={pt} planner_d_model={pdm} weight_factor={wf} action_arctanh={aa} normalize_action={na}
-    - python pipelines/veteran_d4rl_antmaze.py mode="inference" seed={seed} task={task} planner_depth={pd} pipeline_type={pt} planner_d_model={pdm} weight_factor={wf} action_arctanh={aa} normalize_action={na}
+    # - python pipelines/veteran_d4rl_antmaze.py mode="train"     seed={seed} task={task} planner_depth={pd} pipeline_type={pt} planner_d_model={pdm} weight_factor={wf} action_arctanh={aa} normalize_action={na}
+    # - python pipelines/veteran_d4rl_antmaze.py mode="inference" seed={seed} task={task} planner_depth={pd} pipeline_type={pt} planner_d_model={pdm} weight_factor={wf} action_arctanh={aa} normalize_action={na}
 
   type: grid
   # sampling: grid
@@ -83,11 +84,11 @@ search:
   parallel_trials: 512
 
   params: 
-    - name: task
-      spec: discrete
+    # - name: task
+    #   spec: discrete
     #   values: ["halfcheetah-medium-v2", "hopper-medium-v2", "walker2d-medium-v2", "halfcheetah-medium-expert-v2", "hopper-medium-expert-v2", "walker2d-medium-expert-v2", "halfcheetah-medium-replay-v2", "hopper-medium-replay-v2", "walker2d-medium-replay-v2"]
       # values: ["kitchen-partial-v0", "kitchen-mixed-v0"]
-      values: ["antmaze-medium-play-v2", "antmaze-medium-diverse-v2", "antmaze-large-play-v2", "antmaze-large-diverse-v2"]
+      # values: ["antmaze-medium-play-v2", "antmaze-medium-diverse-v2", "antmaze-large-play-v2", "antmaze-large-diverse-v2"]
 
     - name: pt
       spec: discrete
@@ -100,36 +101,37 @@ search:
 
     - name: aa
       spec: discrete
-      values: [0, 1]
+      values: [1]
 
     - name: na
       spec: discrete
-      values: [0, 1]
+      values: [0]
 
-    # - name: tau
-    #   spec: discrete
-    #   values: [0.7]
-    #   # values: [0.3, 0.5, 0.7, 0.9, 0.95]
+    - name: tau
+      spec: discrete
+      # values: [0.7]
+      values: [0.3, 0.5, 0.7, 0.9, 0.95]
 
-    # - name: gamma
-    #   spec: discrete
-    #   values: [0.99, 0.997]
+    - name: gamma
+      spec: discrete
+      values: [0.99]
 
     - name: wf
       spec: discrete
-      # values: [0, 0.2, 1, 5, 25]
-      values: [0, 0.3]
+      values: [0, 0.2, 1, 5]
+      # values: [1]
 
-    - name: pd
-      spec: discrete
-      values: [2, 6, 12] # planner depth
+    # - name: pd
+    #   spec: discrete
+    #   values: [4] # planner depth
 
     - name: seed
       spec: discrete
       values: [0, 1]
 
     ### Inference parameters
-    # - name: tmp
-    #   spec: discrete
-    #   values: [0.1, 0.3, 0.6, 1.0]
+    - name: tmp
+      spec: discrete
+      # values: [1]
+      values: [0.1, 0.3, 0.6, 1.0]
 

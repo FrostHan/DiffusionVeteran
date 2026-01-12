@@ -31,7 +31,7 @@ for task in "${tasks[@]}"; do
       planner_d_model="${pdm}" \
       planner_depth="${pd}" \
       task.planner_temperature="${tmp}" \
-      num_envs=50 \
+      num_envs=75 \
       num_episodes=4 \
       planner_num_candidates=50 \
       normalize_action=${na} \
